@@ -1,0 +1,585 @@
+
+"""
+Configuration Manager for MiDaS Depth Scanner
+
+Centralized configuration management with support for file-based configs,
+environment variables, and runtime parameter adjustment.
+
+Author: Corey Dziadzio
+Email: coreydziadzio@c11visualarts.com
+GitHub: https://github.com/CJD-11/Mind-Topgraphic
+
+"""
+
+import json
+import os
+from typing import Dict, Any, Optional
+from dataclasses import dataclass, asdict
+from pathlib import Path
+
+
+@dataclass
+class DepthScannerConfig:
+    """
+    Configuration class for MiDaS Depth Scanner application.
+    
+    Contains all configurable parameters with sensible defaults and
+    validation support.
+    """
+    
+    # Input/Output Configuration
+    input_folder: str = "assets/sample_images"
+    output_folder: str = "output/videos"
+    
+    # Video Configuration
+    fps: int = 30
+    target_width: int = 3840
+    target_height: int = 2160
+    final_hold_seconds: int = 5
+    video_codec: str = "mp4v"
+    video_quality: int = 90  # 0-100 scale
+    
+    # Scanning Animation
+    scan_loops: int = 2
+    scan_band_height: int = 8
+    scan_direction: str = "horizontal"  # "horizontal", "vertical", "diagonal"
+    scan_speed_multiplier: float = 1.0
+    
+    # Depth Processing
+    depth_model: str = "DPT_Large"  # "DPT_Large", "DPT_Hybrid", "MiDaS_small"
+    contour_levels: int = 150
+    depth_inversion: bool = False  # Invert depth values
+    depth_clipping: tuple = (0.0, 1.0)  # Min, max depth values to use
+    
+    # Visual Effects
+    fade_decay: float = 0.94
+    red_strength: float = 1.5
+    bw_opacity: float = 0.12
+    blur_radius: float = 1.5
+    glow_intensity: float = 1.0
+    
+    # Color Settings
+    scan_line_color: tuple = (0, 0, 255)  # BGR format
+    contour_color: tuple = (0, 0, 255)    # BGR format
+    background_fade_color: tuple = (0, 0, 0)  # BGR format
+    
+    # Performance Settings
+    device: str = "auto"  # "auto", "cuda", "cpu"
+    force_gpu: bool = False
+    force_cpu: bool = False
+    batch_size: int = 1
+    num_threads: int = 4
+    memory_optimization: bool = True
+    
+    # Advanced Settings
+    antialiasing: bool = True
+    high_quality_resize: bool = True
+    preserve_aspect_ratio: bool = True
+    pad_color: tuple = (0, 0, 0)  # Padding color for aspect ratio preservation
+    
+    # Debug and Development
+    save_intermediate_frames: bool = False
+    save_depth_maps: bool = False
+    enable_profiling: bool = False
+    verbose_logging: bool = False
+    
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        self.validate()
+    
+    def validate(self) -> bool:
+        """
+        Validate configuration parameters.
+        
+        Returns:
+            bool: True if configuration is valid
+            
+        Raises:
+            ValueError: If configuration parameters are invalid
+        """
+        # Video configuration validation
+        if self.fps <= 0 or self.fps > 120:
+            raise ValueError("FPS must be between 1 and 120")
+        
+        if self.target_width <= 0 or self.target_height <= 0:
+            raise ValueError("Target dimensions must be positive")
+        
+        if self.final_hold_seconds < 0:
+            raise ValueError("Final hold seconds must be non-negative")
+        
+        # Scanning animation validation
+        if self.scan_loops <= 0:
+            raise ValueError("Scan loops must be positive")
+        
+        if self.scan_band_height <= 0:
+            raise ValueError("Scan band height must be positive")
+        
+        if self.scan_direction not in ["horizontal", "vertical", "diagonal"]:
+            raise ValueError("Invalid scan direction")
+        
+        if self.scan_speed_multiplier <= 0:
+            raise ValueError("Scan speed multiplier must be positive")
+        
+        # Depth processing validation
+        valid_models = ["DPT_Large", "DPT_Hybrid", "MiDaS_small"]
+        if self.depth_model not in valid_models:
+            raise ValueError(f"Depth model must be one of: {valid_models}")
+        
+        if self.contour_levels <= 0:
+            raise ValueError("Contour levels must be positive")
+        
+        if not (0.0 <= self.depth_clipping[0] <= self.depth_clipping[1] <= 1.0):
+            raise ValueError("Depth clipping values must be between 0.0 and 1.0")
+        
+        # Visual effects validation
+        if not (0.0 <= self.fade_decay <= 1.0):
+            raise ValueError("Fade decay must be between 0.0 and 1.0")
+        
+        if self.red_strength < 0:
+            raise ValueError("Red strength must be non-negative")
+        
+        if not (0.0 <= self.bw_opacity <= 1.0):
+            raise ValueError("BW opacity must be between 0.0 and 1.0")
+        
+        if self.blur_radius < 0:
+            raise ValueError("Blur radius must be non-negative")
+        
+        # Color validation
+        for color_name, color_value in [
+            ("scan_line_color", self.scan_line_color),
+            ("contour_color", self.contour_color),
+            ("background_fade_color", self.background_fade_color),
+            ("pad_color", self.pad_color)
+        ]:
+            if len(color_value) != 3:
+                raise ValueError(f"{color_name} must be a 3-tuple (BGR)")
+            if not all(0 <= c <= 255 for c in color_value):
+                raise ValueError(f"{color_name} values must be between 0 and 255")
+        
+        # Performance validation
+        if self.batch_size <= 0:
+            raise ValueError("Batch size must be positive")
+        
+        if self.num_threads <= 0:
+            raise ValueError("Number of threads must be positive")
+        
+        return True
+
+
+class ConfigManager:
+    """
+    Advanced configuration manager for the Depth Scanner system.
+    
+    Handles loading, saving, validation, and runtime updates of configuration
+    parameters with support for multiple profiles and environment overrides.
+    """
+    
+    def __init__(self, config_path: Optional[str] = None):
+        """
+        Initialize configuration manager.
+        
+        Args:
+            config_path: Optional path to configuration file
+        """
+        self.config_path = config_path
+        self.config = None
+        self.default_config_dir = Path("config")
+        self.profiles = {}
+        
+        # Load configuration
+        self._load_configuration()
+    
+    def _load_configuration(self):
+        """Load configuration from file or create default."""
+        if self.config_path and os.path.exists(self.config_path):
+            # Load from specified file
+            self.config = self._load_from_file(self.config_path)
+            print(f"📁 Loaded configuration from: {self.config_path}")
+        else:
+            # Create default configuration
+            self.config = DepthScannerConfig()
+            print("⚙️ Using default configuration")
+        
+        # Apply environment variable overrides
+        self._apply_environment_overrides()
+    
+    def _load_from_file(self, file_path: str) -> DepthScannerConfig:
+        """
+        Load configuration from JSON file.
+        
+        Args:
+            file_path: Path to configuration file
+            
+        Returns:
+            DepthScannerConfig: Loaded configuration
+        """
+        try:
+            with open(file_path, 'r') as f:
+                config_dict = json.load(f)
+            
+            # Convert dict to config object
+            config = DepthScannerConfig()
+            
+            # Update with loaded values
+            for key, value in config_dict.items():
+                if hasattr(config, key):
+                    # Handle tuple conversion
+                    if key in ['scan_line_color', 'contour_color', 'background_fade_color', 'pad_color', 'depth_clipping']:
+                        if isinstance(value, list):
+                            value = tuple(value)
+                    
+                    setattr(config, key, value)
+                else:
+                    print(f"⚠️ Unknown configuration key ignored: {key}")
+            
+            return config
+            
+        except Exception as e:
+            print(f"❌ Error loading configuration from {file_path}: {e}")
+            print("🔄 Falling back to default configuration")
+            return DepthScannerConfig()
+    
+    def _apply_environment_overrides(self):
+        """Apply configuration overrides from environment variables."""
+        env_mappings = {
+            'DEPTH_SCANNER_INPUT': ('input_folder', str),
+            'DEPTH_SCANNER_OUTPUT': ('output_folder', str),
+            'DEPTH_SCANNER_FPS': ('fps', int),
+            'DEPTH_SCANNER_WIDTH': ('target_width', int),
+            'DEPTH_SCANNER_HEIGHT': ('target_height', int),
+            'DEPTH_SCANNER_MODEL': ('depth_model', str),
+            'DEPTH_SCANNER_DEVICE': ('device', str),
+            'DEPTH_SCANNER_LOOPS': ('scan_loops', int),
+            'DEPTH_SCANNER_QUALITY': ('video_quality', int),
+            'DEPTH_SCANNER_THREADS': ('num_threads', int),
+            'DEPTH_SCANNER_GPU': ('force_gpu', lambda x: x.lower() == 'true'),
+            'DEPTH_SCANNER_CPU': ('force_cpu', lambda x: x.lower() == 'true'),
+            'DEPTH_SCANNER_VERBOSE': ('verbose_logging', lambda x: x.lower() == 'true'),
+        }
+        
+        overrides_applied = 0
+        
+        for env_var, (config_attr, converter) in env_mappings.items():
+            env_value = os.getenv(env_var)
+            if env_value is not None:
+                try:
+                    converted_value = converter(env_value)
+                    setattr(self.config, config_attr, converted_value)
+                    print(f"🌍 Environment override: {config_attr} = {converted_value}")
+                    overrides_applied += 1
+                except ValueError as e:
+                    print(f"⚠️ Invalid environment variable {env_var}={env_value}: {e}")
+        
+        if overrides_applied > 0:
+            print(f"✅ Applied {overrides_applied} environment overrides")
+    
+    def save_to_file(self, file_path: str):
+        """
+        Save current configuration to JSON file.
+        
+        Args:
+            file_path: Output file path
+        """
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            
+            # Convert config to dict
+            config_dict = asdict(self.config)
+            
+            # Save to file
+            with open(file_path, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+            
+            print(f"💾 Configuration saved to: {file_path}")
+            
+        except Exception as e:
+            print(f"❌ Error saving configuration: {e}")
+    
+    def update_config(self, updates: Dict[str, Any]):
+        """
+        Update configuration with new values.
+        
+        Args:
+            updates: Dictionary of parameter updates
+        """
+        for key, value in updates.items():
+            if hasattr(self.config, key):
+                old_value = getattr(self.config, key)
+                setattr(self.config, key, value)
+                print(f"🔧 Updated {key}: {old_value} → {value}")
+            else:
+                print(f"⚠️ Unknown configuration parameter: {key}")
+        
+        # Validate updated configuration
+        try:
+            self.config.validate()
+        except ValueError as e:
+            print(f"❌ Configuration validation failed: {e}")
+            raise
+    
+    def get_config(self) -> DepthScannerConfig:
+        """Get current configuration."""
+        return self.config
+    
+    def load_preset(self, preset_name: str) -> bool:
+        """
+        Load a configuration preset.
+        
+        Args:
+            preset_name: Name of preset to load
+            
+        Returns:
+            bool: True if preset loaded successfully
+        """
+        preset_path = self.default_config_dir / f"{preset_name}.json"
+        
+        if preset_path.exists():
+            self.config = self._load_from_file(str(preset_path))
+            print(f"📦 Loaded preset: {preset_name}")
+            return True
+        else:
+            print(f"❌ Preset not found: {preset_name}")
+            return False
+    
+    def get_available_presets(self) -> list:
+        """Get list of available configuration presets."""
+        if not self.default_config_dir.exists():
+            return []
+        
+        presets = []
+        for file_path in self.default_config_dir.glob("*.json"):
+            preset_name = file_path.stem
+            if preset_name != "default":
+                presets.append(preset_name)
+        
+        return presets
+    
+    def create_preset(self, preset_name: str, description: str = "") -> bool:
+        """
+        Create a new preset from current configuration.
+        
+        Args:
+            preset_name: Name for the new preset
+            description: Optional description
+            
+        Returns:
+            bool: True if preset created successfully
+        """
+        try:
+            # Ensure config directory exists
+            self.default_config_dir.mkdir(exist_ok=True)
+            
+            # Create preset file
+            preset_path = self.default_config_dir / f"{preset_name}.json"
+            
+            # Add metadata
+            config_dict = asdict(self.config)
+            config_dict["_metadata"] = {
+                "name": preset_name,
+                "description": description,
+                "created_from": "current_config"
+            }
+            
+            with open(preset_path, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+            
+            print(f"📦 Created preset: {preset_name}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error creating preset: {e}")
+            return False
+    
+    def get_performance_config(self) -> Dict[str, Any]:
+        """Get performance-related configuration."""
+        return {
+            'device': self.config.device,
+            'force_gpu': self.config.force_gpu,
+            'force_cpu': self.config.force_cpu,
+            'batch_size': self.config.batch_size,
+            'num_threads': self.config.num_threads,
+            'memory_optimization': self.config.memory_optimization
+        }
+    
+    def get_video_config(self) -> Dict[str, Any]:
+        """Get video output configuration."""
+        return {
+            'fps': self.config.fps,
+            'target_width': self.config.target_width,
+            'target_height': self.config.target_height,
+            'video_codec': self.config.video_codec,
+            'video_quality': self.config.video_quality,
+            'final_hold_seconds': self.config.final_hold_seconds
+        }
+    
+    def get_effects_config(self) -> Dict[str, Any]:
+        """Get visual effects configuration."""
+        return {
+            'fade_decay': self.config.fade_decay,
+            'red_strength': self.config.red_strength,
+            'bw_opacity': self.config.bw_opacity,
+            'blur_radius': self.config.blur_radius,
+            'glow_intensity': self.config.glow_intensity,
+            'scan_line_color': self.config.scan_line_color,
+            'contour_color': self.config.contour_color
+        }
+    
+    def print_summary(self):
+        """Print a summary of current configuration."""
+        print("\n" + "="*60)
+        print("   MIDAS DEPTH SCANNER CONFIGURATION")
+        print("="*60)
+        
+        print(f"Input/Output:")
+        print(f"  Input folder: {self.config.input_folder}")
+        print(f"  Output folder: {self.config.output_folder}")
+        
+        print(f"\nVideo Settings:")
+        print(f"  Resolution: {self.config.target_width}x{self.config.target_height}")
+        print(f"  FPS: {self.config.fps}")
+        print(f"  Codec: {self.config.video_codec}")
+        print(f"  Quality: {self.config.video_quality}%")
+        
+        print(f"\nDepth Processing:")
+        print(f"  Model: {self.config.depth_model}")
+        print(f"  Contour levels: {self.config.contour_levels}")
+        print(f"  Device: {self.config.device}")
+        
+        print(f"\nAnimation:")
+        print(f"  Scan loops: {self.config.scan_loops}")
+        print(f"  Band height: {self.config.scan_band_height}")
+        print(f"  Direction: {self.config.scan_direction}")
+        
+        print(f"\nEffects:")
+        print(f"  Fade decay: {self.config.fade_decay}")
+        print(f"  Red strength: {self.config.red_strength}")
+        print(f"  Blur radius: {self.config.blur_radius}")
+        
+        print(f"\nPerformance:")
+        print(f"  Threads: {self.config.num_threads}")
+        print(f"  Memory optimization: {self.config.memory_optimization}")
+        print(f"  GPU forced: {self.config.force_gpu}")
+        
+        print("="*60)
+
+
+def create_default_presets():
+    """Create default configuration presets."""
+    presets = {
+        "artistic": {
+            "description": "High-quality artistic effects",
+            "target_width": 3840,
+            "target_height": 2160,
+            "fps": 30,
+            "scan_loops": 3,
+            "fade_decay": 0.95,
+            "red_strength": 2.0,
+            "blur_radius": 2.5,
+            "contour_levels": 200
+        },
+        "performance": {
+            "description": "Optimized for speed",
+            "target_width": 1920,
+            "target_height": 1080,
+            "fps": 24,
+            "scan_loops": 1,
+            "fade_decay": 0.90,
+            "red_strength": 1.0,
+            "blur_radius": 1.0,
+            "contour_levels": 75,
+            "depth_model": "MiDaS_small"
+        },
+        "cinematic": {
+            "description": "Cinema-quality output",
+            "target_width": 3840,
+            "target_height": 2160,
+            "fps": 24,
+            "scan_loops": 2,
+            "fade_decay": 0.96,
+            "red_strength": 1.8,
+            "blur_radius": 2.0,
+            "contour_levels": 180,
+            "final_hold_seconds": 8,
+            "video_quality": 95
+        }
+    }
+    
+    config_dir = Path("config")
+    config_dir.mkdir(exist_ok=True)
+    
+    for preset_name, preset_config in presets.items():
+        # Create full config from default + preset overrides
+        default_config = DepthScannerConfig()
+        
+        # Apply preset overrides
+        for key, value in preset_config.items():
+            if hasattr(default_config, key):
+                setattr(default_config, key, value)
+        
+        # Add metadata
+        config_dict = asdict(default_config)
+        config_dict["_metadata"] = {
+            "name": preset_name,
+            "description": preset_config.get("description", ""),
+            "created_from": "default_preset"
+        }
+        
+        # Save preset
+        preset_path = config_dir / f"{preset_name}.json"
+        with open(preset_path, 'w') as f:
+            json.dump(config_dict, f, indent=2)
+        
+        print(f"📦 Created default preset: {preset_name}")
+
+
+def main():
+    """Test configuration management."""
+    print("Testing Configuration Management")
+    print("=" * 40)
+    
+    # Create default config
+    config_manager = ConfigManager()
+    config_manager.print_summary()
+    
+    # Test saving and loading
+    print("\nTesting file operations...")
+    test_path = "test_config.json"
+    config_manager.save_to_file(test_path)
+    
+    # Test environment overrides
+    print("\nTesting environment variables...")
+    os.environ['DEPTH_SCANNER_FPS'] = '60'
+    os.environ['DEPTH_SCANNER_MODEL'] = 'DPT_Hybrid'
+    
+    config_manager_env = ConfigManager()
+    print(f"FPS from environment: {config_manager_env.config.fps}")
+    print(f"Model from environment: {config_manager_env.config.depth_model}")
+    
+    # Create default presets
+    print("\nCreating default presets...")
+    create_default_presets()
+    
+    # Test preset loading
+    print("\nTesting preset loading...")
+    available_presets = config_manager.get_available_presets()
+    print(f"Available presets: {available_presets}")
+    
+    if "performance" in available_presets:
+        config_manager.load_preset("performance")
+        print(f"Loaded performance preset - Model: {config_manager.config.depth_model}")
+    
+    # Clean up
+    try:
+        os.remove(test_path)
+        print(f"Cleaned up test file: {test_path}")
+    except:
+        pass
+    
+    # Clean up environment
+    os.environ.pop('DEPTH_SCANNER_FPS', None)
+    os.environ.pop('DEPTH_SCANNER_MODEL', None)
+
+
+if __name__ == "__main__":
+    main()
