@@ -1,0 +1,74 @@
+# MiDaS Depth Scanner "Mind Topographic"- Python Dependencies
+# AI-powered artistic video generation with depth-based scanning effects
+
+# Core Deep Learning
+torch>=1.9.0
+torchvision>=0.10.0
+
+# Computer Vision and Image Processing
+opencv-python>=4.5.0
+opencv-contrib-python>=4.5.0
+
+# Numerical Computing
+numpy>=1.21.0
+
+# Image Processing
+Pillow>=8.3.0
+
+# Video Processing (optional, for advanced codecs)
+# Uncomment if you need additional video format support
+# ffmpeg-python>=0.2.0
+
+# Performance and Optimization (optional)
+# Uncomment for performance improvements
+# numba>=0.54.0
+
+# Development and Testing Dependencies
+# Uncomment for development work
+# pytest>=6.0.0
+# pytest-cov>=2.12.0
+# black>=21.0.0
+# flake8>=3.9.0
+# mypy>=0.910
+
+# Visualization and Analysis (optional)
+# Uncomment for enhanced visualization and debugging
+# matplotlib>=3.4.0
+# seaborn>=0.11.0
+
+# Configuration Management (optional)
+# Uncomment for advanced configuration features
+# pyyaml>=5.4.0
+# configparser>=5.0.0
+
+# Progress Bars and CLI Enhancements (optional)
+# Uncomment for better user experience
+# tqdm>=4.62.0
+# rich>=10.0.0
+# click>=8.0.0
+
+# Memory Optimization (optional)
+# Uncomment for memory-intensive processing
+# psutil>=5.8.0
+
+# GPU Utilities (optional)
+# Uncomment for GPU monitoring and optimization
+# nvidia-ml-py3>=7.352.0  # NVIDIA GPU monitoring
+# pynvml>=8.0.4          # Alternative NVIDIA GPU monitoring
+
+# Model Hub Dependencies (automatically installed by torch.hub)
+# These are handled automatically by PyTorch Hub:
+# - intel-isl/MiDaS models
+# - DPT (Dense Prediction Transformer) models
+# - Transform functions
+
+# Platform-Specific Dependencies
+# Windows users may need:
+# - Microsoft Visual C++ 14.0 or greater
+# 
+# Linux users may need:
+# - libgl1-mesa-glx
+# - libglib2.0-0
+#
+# macOS users may need:
+# - Xcode command line tools
